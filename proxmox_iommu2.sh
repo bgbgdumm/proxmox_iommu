@@ -89,6 +89,10 @@ restore_backup() {
     fi
 
     echo "Available backups found:"
+    if [ $(echo "$BACKUP_DIRS" | wc -l) -gt 2 ]; then
+        echo "Note: More than 2 backups are found. Please choose one."
+    fi
+
     select restore_dir in $BACKUP_DIRS; do
         if [ -n "$restore_dir" ]; then
             echo "Restoring from backup: $restore_dir"
