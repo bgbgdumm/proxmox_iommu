@@ -61,9 +61,13 @@ remove_grub_param() {
     # Remove the parameter safely while ensuring no extra spaces
     sed -i -E "s/ ?\b$param=[^ ]*//g" "$GRUB_FILE"
 
-    # Ensure no unbalanced quotes or extra spaces
-    sed -i -E 's/^(GRUB_CMDLINE_LINUX_DEFAULT=") +/\1/' "$GRUB_FILE"
-    sed -i -E 's/  +/ /g' "$GRUB_FILE"  # Remove excess spaces
+    # Remove trailing spaces within the quotes
+    sed -i -E 's/(GRUB_CMDLINE_LINUX_DEFAULT=") +/\1/' "$GRUB_FILE"
+    sed -i -E 's/  +/ /g' "$GRUB_FILE'  # Remove extra spaces
+    sed -i -E 's/=" "/=""/' "$GRUB_FILE"  # Fix empty parameter case
+
+    # Ensure the final line is correctly formatted
+    sed -i -E 's/GRUB_CMDLINE_LINUX_DEFAULT=" *"/GRUB_CMDLINE_LINUX_DEFAULT=""/' "$GRUB_FILE"
 }
 
 # Function to update GRUB
