@@ -1,16 +1,17 @@
 #!/bin/bash
 
 # Define backup directory
-BACKUP_DIR="/root/proxmox_backup_$(date +%F_%T)"
-CONFIG_FILES=("/etc/default/grub" "/etc/modules" "/etc/pve/qemu-server/")
-RESTORE_DIR=$(ls -d /root/proxmox_backup_* 2>/dev/null | tail -n1)
+BACKUP_BASE="/var/lib/proxmox_iommu_script_backup"
+BACKUP_DIR="$BACKUP_BASE/proxmox_backup_$(date +%Y%m%d_%H%M%S)"
+CONFIG_FILES=("/etc/default/grub" "/etc/modules")
+RESTORE_DIR=$(ls -d "$BACKUP_BASE/proxmox_backup_"* 2>/dev/null | tail -n1)
 
 # Function to create backups
 backup_configs() {
     echo "Creating backup at $BACKUP_DIR..."
     mkdir -p "$BACKUP_DIR"
     for file in "${CONFIG_FILES[@]}"; do
-        cp -r "$file" "$BACKUP_DIR/"
+        cp "$file" "$BACKUP_DIR/"
     done
     echo "Backup completed!"
 }
@@ -52,7 +53,7 @@ restore_backup() {
 
     echo "Restoring from backup: $RESTORE_DIR"
     for file in "${CONFIG_FILES[@]}"; do
-        cp -r "$RESTORE_DIR/$(basename "$file")" "$file"
+        cp "$RESTORE_DIR/$(basename "$file")" "$file"
     done
 
     update-grub
