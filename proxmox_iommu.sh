@@ -2,6 +2,13 @@
 
 # Initialize global variables
 REBOOT_REQUIRED=0
+DEBUG_MODE=0
+DRY_RUN=0
+
+# Function to print debug messages
+log() {
+    [[ $DEBUG_MODE -eq 1 ]] && echo "[DEBUG] $1"
+}
 
 # Function to check if running as root
 check_root() {
@@ -21,7 +28,19 @@ detect_cpu() {
         echo "Unsupported CPU vendor. Exiting."
         exit 1
     fi
-    echo "Detected CPU: $CPU"
+    log "Detected CPU: $CPU"
+}
+
+# Function to safely modify GRUB settings
+modify_grub() {
+    local key="$1"
+    local value="$2"
+    
+    # Remove existing entry
+    sed -i "s/\b$key=[^ \"']*\b//g" /etc/default/grub
+    
+    # Append new entry
+    sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT/ s/\"$/ $key=$value\"/" /etc/default/grub
 }
 
 # Function to enable or disable virtualization (IOMMU) and screen timeout
@@ -32,24 +51,23 @@ manage_virtualization() {
         SCREEN_TIMEOUT=${SCREEN_TIMEOUT:-60}
 
         if [[ "$CPU" == "AMD" ]]; then
-            echo "Enabling AMD IOMMU..."
-            sed -i 's/\bamd_iommu=on\b//g; s/\biommu=pt\b//g' /etc/default/grub
-            sed -i '/^GRUB_CMDLINE_LINUX_DEFAULT/ s/"$/ amd_iommu=on iommu=pt consoleblank='"$SCREEN_TIMEOUT"'"/' /etc/default/grub
+            log "Enabling AMD IOMMU..."
+            modify_grub "amd_iommu" "on"
+            modify_grub "iommu" "pt"
         else
-            echo "Enabling Intel IOMMU..."
-            sed -i 's/\bintel_iommu=on\b//g; s/\biommu=pt\b//g' /etc/default/grub
-            sed -i '/^GRUB_CMDLINE_LINUX_DEFAULT/ s/"$/ intel_iommu=on iommu=pt consoleblank='"$SCREEN_TIMEOUT"'"/' /etc/default/grub
+            log "Enabling Intel IOMMU..."
+            modify_grub "intel_iommu" "on"
+            modify_grub "iommu" "pt"
         fi
+        modify_grub "consoleblank" "$SCREEN_TIMEOUT"
 
-        update-grub
-        echo "Setting screen timeout to $SCREEN_TIMEOUT seconds..."
-        setterm -blank "$((SCREEN_TIMEOUT / 60))"
+        $DRY_RUN || update-grub || echo "[ERROR] Failed to update GRUB!"
+        $DRY_RUN || setterm -blank "$((SCREEN_TIMEOUT / 60))"
         REBOOT_REQUIRED=1
     else
-        echo "Disabling IOMMU..."
-        sed -i 's/\bamd_iommu=on\b//g; s/\biommu=pt\b//g' /etc/default/grub
-        sed -i 's/\bintel_iommu=on\b//g; s/\biommu=pt\b//g' /etc/default/grub
-        update-grub
+        log "Disabling IOMMU..."
+        sed -i 's/\bamd_iommu=on\b//g; s/\biommu=pt\b//g; s/\bintel_iommu=on\b//g' /etc/default/grub
+        $DRY_RUN || update-grub || echo "[ERROR] Failed to update GRUB!"
         REBOOT_REQUIRED=1
     fi
 }
@@ -58,48 +76,41 @@ manage_virtualization() {
 manage_pci_passthrough() {
     MODULES_FILE="/etc/modules"
     MODULES=("vfio" "vfio_iommu_type1" "vfio_pci" "vfio_virqfd")
-
+    
     read -p "Enable PCI passthrough? (y/n): " ENABLE_PCI
     if [[ "$ENABLE_PCI" == "y" ]]; then
-        echo "Enabling PCI passthrough..."
+        log "Enabling PCI passthrough..."
         for module in "${MODULES[@]}"; do
-            modprobe "$module"
+            $DRY_RUN || modprobe "$module" || echo "[ERROR] Failed to load $module"
             grep -qxF "$module" "$MODULES_FILE" || echo "$module" >> "$MODULES_FILE"
         done
-        echo "PCI passthrough enabled."
     else
-        echo "Disabling PCI passthrough..."
+        log "Disabling PCI passthrough..."
         for module in "${MODULES[@]}"; do
-            if lsmod | grep -q "$module"; then
-                modprobe -r "$module"
-            fi
+            $DRY_RUN || modprobe -r "$module"
             sed -i "/^$module$/d" "$MODULES_FILE"
         done
-        echo "PCI passthrough disabled."
     fi
 }
 
 # Function to manage lid switch behavior
 manage_lid_switch() {
     LOGIND_CONF="/etc/systemd/logind.conf"
-
     read -p "Ignore laptop lid closing? (y/n): " ENABLE_LID
     if [[ "$ENABLE_LID" == "y" ]]; then
-        sed -i 's/^HandleLidSwitch=.*/HandleLidSwitch=ignore/' "$LOGIND_CONF"
-        if ! grep -q "^HandleLidSwitch=ignore" "$LOGIND_CONF"; then
-            echo "HandleLidSwitch=ignore" >> "$LOGIND_CONF"
-        fi
-        systemctl restart systemd-logind
-        echo "Lid switch ignored."
+        log "Ignoring laptop lid switch..."
+        sed -i '/^HandleLidSwitch=/d' "$LOGIND_CONF"
+        echo "HandleLidSwitch=ignore" >> "$LOGIND_CONF"
     else
-        sed -i 's/^HandleLidSwitch=ignore/#HandleLidSwitch=ignore/' "$LOGIND_CONF"
-        systemctl restart systemd-logind
-        echo "Restored default lid switch behavior."
+        log "Restoring default lid switch behavior..."
+        sed -i '/^HandleLidSwitch=ignore/d' "$LOGIND_CONF"
     fi
+    $DRY_RUN || systemctl restart systemd-logind
 }
 
 # Menu
 check_root
+
 detect_cpu
 
 echo "Choose an option:"
@@ -107,7 +118,9 @@ echo "1) Manage Virtualization & Screen Timeout"
 echo "2) Manage PCI Passthrough Modules"
 echo "3) Manage Laptop Lid Switch Behavior"
 echo "4) Apply All Settings"
-echo "5) Exit"
+echo "5) Enable Debug Mode"
+echo "6) Enable Dry Run Mode (No Changes Applied)"
+echo "7) Exit"
 
 read -p "Enter your choice: " choice
 
@@ -120,7 +133,9 @@ case $choice in
         manage_pci_passthrough
         manage_lid_switch
         ;;
-    5) echo "Exiting..."; exit 0 ;;
+    5) DEBUG_MODE=1; echo "Debug mode enabled!" ;;
+    6) DRY_RUN=1; echo "Dry run mode enabled! No changes will be made." ;;
+    7) echo "Exiting..."; exit 0 ;;
     *) echo "Invalid choice, exiting."; exit 1 ;;
 esac
 
