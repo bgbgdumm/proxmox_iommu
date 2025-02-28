@@ -3,28 +3,56 @@
 # Initialize global variables
 REBOOT_REQUIRED=0
 GRUB_FILE="/etc/default/grub"
+GRUB_BACKUP="/etc/default/grub.bak"
 MODULES_FILE="/etc/modules"
 LOGIND_CONF="/etc/systemd/logind.conf"
+PROXMOX_LOG="/var/log/proxmox_tuning.log"
+
+# Function to log messages
+to_log() {
+    echo "$(date) - $1" | tee -a "$PROXMOX_LOG"
+}
 
 # Function to check if running as root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        echo "This script must be run as root. Please run with sudo."
+        to_log "This script must be run as root. Please run with sudo."
         exit 1
     fi
 }
 
 # Function to detect CPU vendor
 detect_cpu() {
-    if grep -q "AMD" /proc/cpuinfo; then
+    local cpu_info=$(grep -m1 "vendor_id" /proc/cpuinfo)
+    if [[ $cpu_info == *"AMD"* ]]; then
         CPU="AMD"
-    elif grep -q "Intel" /proc/cpuinfo; then
+    elif [[ $cpu_info == *"Intel"* ]]; then
         CPU="Intel"
     else
-        echo "Unsupported CPU vendor. Exiting."
+        to_log "Unsupported CPU vendor. Exiting."
         exit 1
     fi
-    echo "Detected CPU: $CPU"
+    to_log "Detected CPU: $CPU"
+}
+
+# Function to create a backup of GRUB
+backup_grub() {
+    if [[ ! -f "$GRUB_BACKUP" ]]; then
+        cp "$GRUB_FILE" "$GRUB_BACKUP"
+        to_log "GRUB configuration backed up."
+    fi
+}
+
+# Function to restore GRUB from backup
+restore_grub() {
+    if [[ -f "$GRUB_BACKUP" ]]; then
+        cp "$GRUB_BACKUP" "$GRUB_FILE"
+        update-grub
+        to_log "GRUB restored from backup. Reboot required."
+        REBOOT_REQUIRED=1
+    else
+        to_log "No GRUB backup found."
+    fi
 }
 
 # Function to modify GRUB safely
@@ -36,117 +64,82 @@ modify_grub() {
     else
         sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT/ s/\"$/ $param=$value\"/" "$GRUB_FILE"
     fi
+    REBOOT_REQUIRED=1
+    to_log "Modified GRUB: $param=$value"
 }
 
-# Function to manage virtualization (IOMMU)
-manage_virtualization() {
-    read -p "Do you want to enable virtualization (IOMMU)? (y/n): " ENABLE_VIRT
-    if [[ "$ENABLE_VIRT" == "y" ]]; then
-        echo "Enabling IOMMU..."
-        if [[ "$CPU" == "AMD" ]]; then
-            modify_grub "amd_iommu" "on"
-            modify_grub "iommu" "pt"
-        else
-            modify_grub "intel_iommu" "on"
-            modify_grub "iommu" "pt"
-        fi
-        REBOOT_REQUIRED=1
+# Function to check IOMMU support
+check_iommu_support() {
+    if find /sys/kernel/iommu_groups -type l | grep -q .; then
+        to_log "IOMMU is supported on this system."
     else
-        echo "Disabling IOMMU..."
-        sed -i 's/\bamd_iommu=[^ ]*//g' "$GRUB_FILE"
-        sed -i 's/\bintel_iommu=[^ ]*//g' "$GRUB_FILE"
-        sed -i 's/\biommu=[^ ]*//g' "$GRUB_FILE"
-        REBOOT_REQUIRED=1
+        to_log "IOMMU is not supported. Some features may not work."
     fi
-    update-grub &>/dev/null || grub-mkconfig -o /boot/grub/grub.cfg
 }
 
-# Function to manage screen timeout
-manage_screen_timeout() {
-    read -p "Enter console blank timeout in seconds (default: 60): " SCREEN_TIMEOUT
-    if ! [[ "$SCREEN_TIMEOUT" =~ ^[0-9]+$ ]]; then
-        echo "Invalid input. Using default 60 seconds."
-        SCREEN_TIMEOUT=60
-    fi
-    echo "Setting console blank timeout to $SCREEN_TIMEOUT seconds..."
-    setterm -blank "$SCREEN_TIMEOUT"
+# Function to apply recommended settings
+apply_recommended() {
+    to_log "Applying recommended settings..."
+    modify_grub "iommu" "pt"
+    modify_grub "$CPU_iommu" "on"
+    modify_grub "pcie_acs_override" "downstream,multifunction"
+    manage_pci_passthrough "enable"
+    manage_lid_switch "enable"
+    update-initramfs -u
+    to_log "Recommended settings applied. Reboot required."
+    REBOOT_REQUIRED=1
 }
 
-# Function to manage PCI passthrough modules
-manage_pci_passthrough() {
-    MODULES=("vfio" "vfio_iommu_type1" "vfio_pci" "vfio_virqfd")
-
-    read -p "Enable PCI passthrough? (y/n): " ENABLE_PCI
-    if [[ "$ENABLE_PCI" == "y" ]]; then
-        echo "Enabling PCI passthrough..."
-        for module in "${MODULES[@]}"; do
-            if ! grep -qxF "$module" "$MODULES_FILE"; then
-                echo "$module" >> "$MODULES_FILE"
-            fi
-        done
-        update-initramfs -u
+# Function to view logs
+view_logs() {
+    if [[ -f "$PROXMOX_LOG" ]]; then
+        cat "$PROXMOX_LOG"
     else
-        echo "Disabling PCI passthrough..."
-        for module in "${MODULES[@]}"; do
-            sed -i "/^$module$/d" "$MODULES_FILE"
-        done
-        update-initramfs -u
+        to_log "No logs found."
     fi
 }
 
-# Function to manage lid switch behavior
-manage_lid_switch() {
-    read -p "Ignore laptop lid closing? (y/n): " ENABLE_LID
-    if [[ "$ENABLE_LID" == "y" ]]; then
-        sed -i 's/^HandleLidSwitch=.*/HandleLidSwitch=ignore/' "$LOGIND_CONF"
-        grep -q "^HandleLidSwitch=ignore" "$LOGIND_CONF" || echo "HandleLidSwitch=ignore" >> "$LOGIND_CONF"
-    else
-        sed -i 's/^HandleLidSwitch=ignore/#HandleLidSwitch=ignore/' "$LOGIND_CONF"
-    fi
-    systemctl restart systemd-logind
+# Function to revert all changes
+reset_settings() {
+    restore_grub
+    sed -i '/vfio\|vfio_iommu_type1\|vfio_pci\|vfio_virqfd/d' "$MODULES_FILE"
+    update-initramfs -u
+    to_log "All changes reverted to default settings. Reboot required."
+    REBOOT_REQUIRED=1
 }
 
 # Menu
 check_root
+backup_grub
 detect_cpu
+check_iommu_support
 
-OPTIONS=(
-    "Manage Virtualization (IOMMU)"
-    "Manage Screen Timeout"
-    "Manage PCI Passthrough Modules"
-    "Manage Laptop Lid Switch Behavior"
-    "Apply All Settings"
-    "Exit"
-)
+while true; do
+    echo -e "\nDetected CPU: $CPU"
+    echo "1) Manage IOMMU"
+    echo "2) Manage ACS Override"
+    echo "3) Manage SR-IOV"
+    echo "4) Manage PCI Passthrough Modules"
+    echo "5) Manage Laptop Lid Switch Behavior"
+    echo "6) Apply Recommended Settings"
+    echo "7) Restore GRUB from Backup"
+    echo "8) View Logs"
+    echo "9) Reset All Settings"
+    echo "10) Exit"
+    read -p "Enter your choice: " CHOICE
 
-PS3="Enter your choice: "
-select choice in "${OPTIONS[@]}"; do
-    case $REPLY in
-        1) manage_virtualization ;;
-        2) manage_screen_timeout ;;
-        3) manage_pci_passthrough ;;
-        4) manage_lid_switch ;;
-        5)
-            manage_virtualization
-            manage_screen_timeout
-            manage_pci_passthrough
-            manage_lid_switch
-            ;;
-        6) echo "Exiting..."; exit 0 ;;
-        *) echo "Invalid choice, try again." ;;
+    case "$CHOICE" in
+        1) manage_iommu ;;
+        2) manage_acs_override ;;
+        3) manage_sriov ;;
+        4) manage_pci_passthrough ;;
+        5) manage_lid_switch ;;
+        6) apply_recommended ;;
+        7) restore_grub ;;
+        8) view_logs ;;
+        9) reset_settings ;;
+        10) exit 0 ;;
+        *) echo "Invalid option. Please try again." ;;
     esac
-    break
-done
 
-# Ask for reboot if necessary
-if [[ $REBOOT_REQUIRED -eq 1 ]]; then
-    read -p "A reboot is required for changes to take effect. Reboot now? (y/n): " REBOOT_NOW
-    if [[ "$REBOOT_NOW" == "y" ]]; then
-        echo "Rebooting now..."
-        reboot
-    else
-        echo "Reboot later for changes to apply."
-    fi
-else
-    echo "All changes applied successfully!"
-fi
+done
