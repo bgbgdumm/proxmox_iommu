@@ -1,32 +1,41 @@
 #!/bin/bash
 
-# Initialize global variables
+# Global Variables
 REBOOT_REQUIRED=0
 GRUB_FILE="/etc/default/grub"
 GRUB_BACKUP="/etc/default/grub.bak"
 MODULES_FILE="/etc/modules"
 LOGIND_CONF="/etc/systemd/logind.conf"
-PROXMOX_LOG="/var/log/proxmox_tuning.log"
+PROXMOX_LOG="/var/log/proxmox_tweaks.log"
 
 # Function to log messages
 to_log() {
     echo "$(date) - $1" | tee -a "$PROXMOX_LOG"
 }
 
-# Function to check if running as root
+# Ensure script is run as root
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        to_log "This script must be run as root. Please run with sudo."
+        to_log "This script must be run as root. Please use sudo."
         exit 1
     fi
 }
 
-# Function to detect CPU vendor
+# Check for required commands
+check_dependencies() {
+    for cmd in grep sed update-initramfs systemctl; do
+        if ! command -v $cmd &>/dev/null; then
+            to_log "Missing required command: $cmd. Install it and try again."
+            exit 1
+        fi
+    done
+}
+
+# Detect CPU vendor
 detect_cpu() {
-    local cpu_info=$(grep -m1 "vendor_id" /proc/cpuinfo)
-    if [[ $cpu_info == *"AMD"* ]]; then
+    if grep -q "AMD" /proc/cpuinfo; then
         CPU="AMD"
-    elif [[ $cpu_info == *"Intel"* ]]; then
+    elif grep -q "Intel" /proc/cpuinfo; then
         CPU="Intel"
     else
         to_log "Unsupported CPU vendor. Exiting."
@@ -35,27 +44,18 @@ detect_cpu() {
     to_log "Detected CPU: $CPU"
 }
 
-# Function to create a backup of GRUB
-backup_grub() {
-    if [[ ! -f "$GRUB_BACKUP" ]]; then
-        cp "$GRUB_FILE" "$GRUB_BACKUP"
-        to_log "GRUB configuration backed up."
-    fi
-}
-
-# Function to restore GRUB from backup
-restore_grub() {
-    if [[ -f "$GRUB_BACKUP" ]]; then
-        cp "$GRUB_BACKUP" "$GRUB_FILE"
-        update-grub
-        to_log "GRUB restored from backup. Reboot required."
-        REBOOT_REQUIRED=1
+# Check for hardware support (VT-d / AMD-V)
+check_hardware_support() {
+    if [[ "$CPU" == "AMD" && -z $(grep -E "(svm)" /proc/cpuinfo) ]]; then
+        to_log "Warning: AMD-V not supported or disabled in BIOS."
+    elif [[ "$CPU" == "Intel" && -z $(grep -E "(vmx)" /proc/cpuinfo) ]]; then
+        to_log "Warning: VT-d not supported or disabled in BIOS."
     else
-        to_log "No GRUB backup found."
+        to_log "IOMMU is supported on this system."
     fi
 }
 
-# Function to modify GRUB safely
+# Modify GRUB parameters safely
 modify_grub() {
     local param="$1"
     local value="$2"
@@ -68,78 +68,78 @@ modify_grub() {
     to_log "Modified GRUB: $param=$value"
 }
 
-# Function to check IOMMU support
-check_iommu_support() {
-    if find /sys/kernel/iommu_groups -type l | grep -q .; then
-        to_log "IOMMU is supported on this system."
+# Backup & restore GRUB
+backup_grub() {
+    cp "$GRUB_FILE" "$GRUB_BACKUP"
+    to_log "GRUB configuration backed up."
+}
+restore_grub() {
+    if [[ -f "$GRUB_BACKUP" ]]; then
+        cp "$GRUB_BACKUP" "$GRUB_FILE"
+        update-grub
+        to_log "GRUB restored from backup. A reboot is required."
+        REBOOT_REQUIRED=1
     else
-        to_log "IOMMU is not supported. Some features may not work."
+        to_log "No backup found. Cannot restore."
     fi
 }
 
-# Function to apply recommended settings
+# Apply recommended settings
 apply_recommended() {
     to_log "Applying recommended settings..."
     modify_grub "iommu" "pt"
-    modify_grub "$CPU_iommu" "on"
+    modify_grub "${CPU,,}_iommu" "on"
     modify_grub "pcie_acs_override" "downstream,multifunction"
-    manage_pci_passthrough "enable"
-    manage_lid_switch "enable"
+    echo -e "vfio\nvfio_iommu_type1\nvfio_pci\nvfio_virqfd" > "$MODULES_FILE"
     update-initramfs -u
-    to_log "Recommended settings applied. Reboot required."
     REBOOT_REQUIRED=1
 }
 
-# Function to view logs
-view_logs() {
-    if [[ -f "$PROXMOX_LOG" ]]; then
-        cat "$PROXMOX_LOG"
-    else
-        to_log "No logs found."
-    fi
-}
-
-# Function to revert all changes
-reset_settings() {
+# Reset all tweaks
+reset_tweaks() {
+    to_log "Resetting all modifications..."
     restore_grub
-    sed -i '/vfio\|vfio_iommu_type1\|vfio_pci\|vfio_virqfd/d' "$MODULES_FILE"
+    sed -i "/^vfio/d" "$MODULES_FILE"
     update-initramfs -u
-    to_log "All changes reverted to default settings. Reboot required."
+    to_log "All modifications reset. A reboot is required."
     REBOOT_REQUIRED=1
+}
+
+# View logs
+view_logs() {
+    cat "$PROXMOX_LOG" | less
 }
 
 # Menu
+echo "Initializing..."
 check_root
-backup_grub
+check_dependencies
 detect_cpu
-check_iommu_support
+check_hardware_support
+backup_grub
 
 while true; do
-    echo -e "\nDetected CPU: $CPU"
-    echo "1) Manage IOMMU"
-    echo "2) Manage ACS Override"
-    echo "3) Manage SR-IOV"
-    echo "4) Manage PCI Passthrough Modules"
-    echo "5) Manage Laptop Lid Switch Behavior"
-    echo "6) Apply Recommended Settings"
-    echo "7) Restore GRUB from Backup"
-    echo "8) View Logs"
-    echo "9) Reset All Settings"
-    echo "10) Exit"
+    echo -e "\nMenu:"
+    echo "1) Enable IOMMU"
+    echo "2) Enable ACS Override"
+    echo "3) Enable PCI Passthrough"
+    echo "4) Apply Recommended Settings"
+    echo "5) Reset All Modifications"
+    echo "6) Restore GRUB from Backup"
+    echo "7) View Logs"
+    echo "8) Exit"
     read -p "Enter your choice: " CHOICE
 
     case "$CHOICE" in
-        1) manage_iommu ;;
-        2) manage_acs_override ;;
-        3) manage_sriov ;;
-        4) manage_pci_passthrough ;;
-        5) manage_lid_switch ;;
-        6) apply_recommended ;;
-        7) restore_grub ;;
-        8) view_logs ;;
-        9) reset_settings ;;
-        10) exit 0 ;;
-        *) echo "Invalid option. Please try again." ;;
+        1) modify_grub "${CPU,,}_iommu" "on"; modify_grub "iommu" "pt";;
+        2) modify_grub "pcie_acs_override" "downstream,multifunction";;
+        3) echo -e "vfio\nvfio_iommu_type1\nvfio_pci\nvfio_virqfd" > "$MODULES_FILE"; update-initramfs -u;;
+        4) apply_recommended;;
+        5) reset_tweaks;;
+        6) restore_grub;;
+        7) view_logs;;
+        8) [[ "$REBOOT_REQUIRED" -eq 1 ]] && echo "Reboot required!"; exit 0;;
+        *) echo "Invalid option. Try again.";;
     esac
 
 done
