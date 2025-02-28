@@ -61,13 +61,51 @@ modify_grub() {
     if grep -q "\b$param=[^ ]*" "$GRUB_FILE"; then
         sed -i "s/\b$param=[^ ]*/$param=$value/" "$GRUB_FILE"
     else
-        sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT/ s/\"$/ $param=$value\"/" "$GRUB_FILE"
+        sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT/ s/"$/ $param=$value"/" "$GRUB_FILE"
     fi
+    update-grub
     REBOOT_REQUIRED=1
     to_log "Modified GRUB: $param=$value"
 }
 
-# Other functions remain unchanged...
+# Toggle function
+toggle_setting() {
+    local setting="$1"
+    local enable_cmd="$2"
+    local disable_cmd="$3"
+    local status_cmd="$4"
+    local status=$(eval "$status_cmd")
+    if [[ "$status" == "enabled" ]]; then
+        eval "$disable_cmd"
+        to_log "$setting disabled."
+    else
+        eval "$enable_cmd"
+        to_log "$setting enabled."
+    fi
+}
+
+# Function to manage IOMMU
+manage_iommu() {
+    toggle_setting "IOMMU" "modify_grub iommu on" "modify_grub iommu off" "grep -q 'iommu=on' $GRUB_FILE && echo enabled || echo disabled"
+}
+
+# Function to manage ACS override
+manage_acs_override() {
+    toggle_setting "ACS Override" "echo 'options kvm_amd avic=1' >> /etc/modprobe.d/kvm.conf && echo 'options kvm_intel nested=1' >> /etc/modprobe.d/kvm.conf && update-initramfs -u" "rm -f /etc/modprobe.d/kvm.conf && update-initramfs -u" "[[ -f /etc/modprobe.d/kvm.conf ]] && echo enabled || echo disabled"
+}
+
+# Function to manage SR-IOV
+manage_sriov() {
+    toggle_setting "SR-IOV" "echo 'vfio-pci' >> "$MODULES_FILE" && modprobe vfio-pci" "sed -i '/vfio-pci/d' "$MODULES_FILE" && modprobe -r vfio-pci" "grep -q 'vfio-pci' "$MODULES_FILE" && echo enabled || echo disabled"
+}
+
+# Function to apply recommended settings
+apply_recommended_settings() {
+    manage_iommu
+    manage_acs_override
+    manage_sriov
+    to_log "Applied recommended settings. Reboot required."
+}
 
 # Menu
 check_root
@@ -79,26 +117,21 @@ while true; do
     echo "1) Manage IOMMU"
     echo "2) Manage ACS Override"
     echo "3) Manage SR-IOV"
-    echo "4) Manage Screen Timeout"
-    echo "5) Manage PCI Passthrough Modules"
-    echo "6) Manage Laptop Lid Switch Behavior"
-    echo "7) Apply Recommended Settings"
-    echo "8) Restore Default Settings"
-    echo "9) View Logs"
-    echo "10) Exit"
+    echo "4) Apply Recommended Settings"
+    echo "5) Restore Default Settings"
+    echo "6) View Logs"
+    echo "7) Exit"
     read -p "Enter your choice: " CHOICE
 
     case "$CHOICE" in
         1) manage_iommu ;;
         2) manage_acs_override ;;
         3) manage_sriov ;;
-        4) manage_screen_timeout ;;
-        5) manage_pci_passthrough ;;
-        6) manage_lid_switch ;;
-        7) apply_recommended_settings ;;
-        8) restore_defaults ;;
-        9) cat "$PROXMOX_LOG" ;;
-        10) exit 0 ;;
+        4) apply_recommended_settings ;;
+        5) restore_defaults ;;
+        6) cat "$PROXMOX_LOG" ;;
+        7) exit 0 ;;
         *) echo "Invalid option. Please try again." ;;
     esac
+
 done
