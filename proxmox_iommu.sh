@@ -31,8 +31,11 @@ detect_cpu() {
 modify_grub() {
     local param="$1"
     local value="$2"
-    sed -i "s/\b$param=[^ ]*\b//g" "$GRUB_FILE"
-    sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT/ s/\"$/ $param=$value\"/" "$GRUB_FILE"
+    if grep -q "\b$param=[^ ]*" "$GRUB_FILE"; then
+        sed -i "s/\b$param=[^ ]*/$param=$value/" "$GRUB_FILE"
+    else
+        sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT/ s/\"$/ $param=$value\"/" "$GRUB_FILE"
+    fi
 }
 
 # Function to manage virtualization (IOMMU)
@@ -50,9 +53,9 @@ manage_virtualization() {
         REBOOT_REQUIRED=1
     else
         echo "Disabling IOMMU..."
-        modify_grub "amd_iommu" ""
-        modify_grub "intel_iommu" ""
-        modify_grub "iommu" ""
+        sed -i 's/\bamd_iommu=[^ ]*//g' "$GRUB_FILE"
+        sed -i 's/\bintel_iommu=[^ ]*//g' "$GRUB_FILE"
+        sed -i 's/\biommu=[^ ]*//g' "$GRUB_FILE"
         REBOOT_REQUIRED=1
     fi
     update-grub &>/dev/null || grub-mkconfig -o /boot/grub/grub.cfg
@@ -60,15 +63,13 @@ manage_virtualization() {
 
 # Function to manage screen timeout
 manage_screen_timeout() {
-    read -p "Enter screen turnoff time in seconds (default: 60): " SCREEN_TIMEOUT
+    read -p "Enter console blank timeout in seconds (default: 60): " SCREEN_TIMEOUT
     if ! [[ "$SCREEN_TIMEOUT" =~ ^[0-9]+$ ]]; then
         echo "Invalid input. Using default 60 seconds."
         SCREEN_TIMEOUT=60
     fi
-    modify_grub "consoleblank" "$SCREEN_TIMEOUT"
-    update-grub &>/dev/null || grub-mkconfig -o /boot/grub/grub.cfg
-    echo "Setting screen timeout to $SCREEN_TIMEOUT seconds..."
-    setterm -blank "$((SCREEN_TIMEOUT / 60))"
+    echo "Setting console blank timeout to $SCREEN_TIMEOUT seconds..."
+    setterm -blank "$SCREEN_TIMEOUT"
 }
 
 # Function to manage PCI passthrough modules
@@ -79,17 +80,17 @@ manage_pci_passthrough() {
     if [[ "$ENABLE_PCI" == "y" ]]; then
         echo "Enabling PCI passthrough..."
         for module in "${MODULES[@]}"; do
-            if ! lsmod | grep -q "$module"; then
-                modprobe "$module" || echo "Failed to load $module"
+            if ! grep -qxF "$module" "$MODULES_FILE"; then
+                echo "$module" >> "$MODULES_FILE"
             fi
-            grep -qxF "$module" "$MODULES_FILE" || echo "$module" >> "$MODULES_FILE"
         done
+        update-initramfs -u
     else
         echo "Disabling PCI passthrough..."
         for module in "${MODULES[@]}"; do
-            modprobe -r "$module" 2>/dev/null
             sed -i "/^$module$/d" "$MODULES_FILE"
         done
+        update-initramfs -u
     fi
 }
 
