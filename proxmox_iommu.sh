@@ -51,6 +51,12 @@ modify_grub() {
     fi
 }
 
+# Function to remove a GRUB parameter
+remove_grub_param() {
+    local param="$1"
+    sed -i "s/ *\b$param=[^ ]*//g" "$GRUB_FILE"
+}
+
 # Function to update GRUB safely
 update_grub() {
     if command -v update-grub &>/dev/null; then
@@ -64,7 +70,7 @@ update_grub() {
 
 # Function to manage virtualization (IOMMU)
 manage_virtualization() {
-    read -p "Do you want to enable virtualization (IOMMU)? (y/n): " ENABLE_VIRT
+    read -p "Enable Virtualization (IOMMU)? (y/n): " ENABLE_VIRT
     if [[ "$ENABLE_VIRT" == "y" ]]; then
         echo "Enabling IOMMU..."
         if [[ "$CPU" == "AMD" ]]; then
@@ -74,26 +80,31 @@ manage_virtualization() {
             modify_grub "intel_iommu" "on"
             modify_grub "iommu" "pt"
         fi
-        REBOOT_REQUIRED=1
     else
         echo "Disabling IOMMU..."
-        sed -i 's/ *\bamd_iommu=[^ ]*//g' "$GRUB_FILE"
-        sed -i 's/ *\bintel_iommu=[^ ]*//g' "$GRUB_FILE"
-        sed -i 's/ *\biommu=[^ ]*//g' "$GRUB_FILE"
-        REBOOT_REQUIRED=1
+        remove_grub_param "amd_iommu"
+        remove_grub_param "intel_iommu"
+        remove_grub_param "iommu"
     fi
     update_grub
+    REBOOT_REQUIRED=1
 }
 
-# Function to manage screen timeout
+# Function to manage screen timeout via GRUB
 manage_screen_timeout() {
-    read -p "Enter console blank timeout in seconds (default: 60): " SCREEN_TIMEOUT
-    if ! [[ "$SCREEN_TIMEOUT" =~ ^[0-9]+$ ]]; then
-        echo "Invalid input. Using default 60 seconds."
-        SCREEN_TIMEOUT=60
+    read -p "Enable screen timeout via GRUB? (y/n): " ENABLE_TIMEOUT
+    if [[ "$ENABLE_TIMEOUT" == "y" ]]; then
+        read -p "Enter console blank timeout in seconds (default: 60): " SCREEN_TIMEOUT
+        if ! [[ "$SCREEN_TIMEOUT" =~ ^[0-9]+$ ]]; then
+            echo "Invalid input. Using default 60 seconds."
+            SCREEN_TIMEOUT=60
+        fi
+        modify_grub "consoleblank" "$SCREEN_TIMEOUT"
+    else
+        remove_grub_param "consoleblank"
     fi
-    echo "Setting console blank timeout to $SCREEN_TIMEOUT seconds..."
-    setterm -blank "$SCREEN_TIMEOUT"
+    update_grub
+    REBOOT_REQUIRED=1
 }
 
 # Function to manage PCI passthrough modules
@@ -108,14 +119,13 @@ manage_pci_passthrough() {
                 echo "$module" >> "$MODULES_FILE"
             fi
         done
-        update-initramfs -u
     else
         echo "Disabling PCI passthrough..."
         for module in "${MODULES[@]}"; do
             sed -i "/^$module$/d" "$MODULES_FILE"
         done
-        update-initramfs -u
     fi
+    update-initramfs -u
 }
 
 # Function to manage lid switch behavior
@@ -136,10 +146,10 @@ backup_config
 detect_cpu
 
 OPTIONS=(
-    "Manage Virtualization (IOMMU)"
-    "Manage Screen Timeout"
-    "Manage PCI Passthrough Modules"
-    "Manage Laptop Lid Switch Behavior"
+    "Enable/Disable Virtualization (IOMMU)"
+    "Enable/Disable Screen Timeout"
+    "Enable/Disable PCI Passthrough Modules"
+    "Enable/Disable Laptop Lid Switch Behavior"
     "Apply All Settings"
     "Exit"
 )
