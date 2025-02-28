@@ -20,9 +20,9 @@ check_root() {
 backup_config() {
     mkdir -p "$BACKUP_DIR"
     for file in "$GRUB_FILE" "$MODULES_FILE" "$LOGIND_CONF"; do
-        if [[ ! -f "$BACKUP_DIR/$(basename $file).bak" ]]; then
-            cp "$file" "$BACKUP_DIR/$(basename $file).bak"
-            echo "Backup created for $(basename $file)"
+        if [[ ! -f "$BACKUP_DIR/$(basename "$file").bak" ]]; then
+            cp "$file" "$BACKUP_DIR/$(basename "$file").bak"
+            echo "Backup created for $(basename "$file")"
         fi
     done
 }
@@ -40,24 +40,33 @@ detect_cpu() {
     echo "Detected CPU: $CPU"
 }
 
-# Function to modify GRUB safely
+# Function to safely modify GRUB parameters
 modify_grub() {
     local param="$1"
     local value="$2"
-    if grep -q "\b$param=[^ ]*" "$GRUB_FILE"; then
-        sed -i "s/\b$param=[^ ]*/$param=$value/" "$GRUB_FILE"
+
+    if grep -qE "\b$param=[^ ]*" "$GRUB_FILE"; then
+        # Replace existing parameter
+        sed -i -E "s/\b$param=[^ ]*/$param=$value/g" "$GRUB_FILE"
     else
-        sed -i "/^GRUB_CMDLINE_LINUX_DEFAULT/ s/\"$/ $param=$value\"/" "$GRUB_FILE"
+        # Append new parameter inside the quotes
+        sed -i -E "s/^(GRUB_CMDLINE_LINUX_DEFAULT=\"[^\"]*)\"/\1 $param=$value\"/" "$GRUB_FILE"
     fi
 }
 
-# Function to remove a GRUB parameter
+# Function to safely remove a GRUB parameter
 remove_grub_param() {
     local param="$1"
-    sed -i "s/ *\b$param=[^ ]*//g" "$GRUB_FILE"
+
+    # Remove the parameter safely while ensuring no extra spaces
+    sed -i -E "s/ ?\b$param=[^ ]*//g" "$GRUB_FILE"
+
+    # Ensure no unbalanced quotes or extra spaces
+    sed -i -E 's/^(GRUB_CMDLINE_LINUX_DEFAULT=") +/\1/' "$GRUB_FILE"
+    sed -i -E 's/  +/ /g' "$GRUB_FILE"  # Remove excess spaces
 }
 
-# Function to update GRUB safely
+# Function to update GRUB
 update_grub() {
     if command -v update-grub &>/dev/null; then
         update-grub
@@ -68,7 +77,7 @@ update_grub() {
     fi
 }
 
-# Function to manage virtualization (IOMMU)
+# Function to enable/disable IOMMU
 manage_virtualization() {
     read -p "Enable Virtualization (IOMMU)? (y/n): " ENABLE_VIRT
     if [[ "$ENABLE_VIRT" == "y" ]]; then
@@ -90,7 +99,7 @@ manage_virtualization() {
     REBOOT_REQUIRED=1
 }
 
-# Function to manage screen timeout via GRUB
+# Function to enable/disable screen timeout via GRUB
 manage_screen_timeout() {
     read -p "Enable screen timeout via GRUB? (y/n): " ENABLE_TIMEOUT
     if [[ "$ENABLE_TIMEOUT" == "y" ]]; then
@@ -101,13 +110,14 @@ manage_screen_timeout() {
         fi
         modify_grub "consoleblank" "$SCREEN_TIMEOUT"
     else
+        echo "Disabling screen timeout..."
         remove_grub_param "consoleblank"
     fi
     update_grub
     REBOOT_REQUIRED=1
 }
 
-# Function to manage PCI passthrough modules
+# Function to enable/disable PCI passthrough modules
 manage_pci_passthrough() {
     MODULES=("vfio" "vfio_iommu_type1" "vfio_pci" "vfio_virqfd")
 
@@ -128,7 +138,7 @@ manage_pci_passthrough() {
     update-initramfs -u
 }
 
-# Function to manage lid switch behavior
+# Function to enable/disable lid switch behavior
 manage_lid_switch() {
     read -p "Ignore laptop lid closing? (y/n): " ENABLE_LID
     if [[ "$ENABLE_LID" == "y" ]]; then
@@ -155,7 +165,7 @@ OPTIONS=(
 )
 
 while true; do
-    echo "\n===== System Configuration Menu ====="
+    echo -e "\n===== System Configuration Menu ====="
     PS3="Enter your choice: "
     select choice in "${OPTIONS[@]}"; do
         case $REPLY in
