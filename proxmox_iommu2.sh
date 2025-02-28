@@ -4,7 +4,7 @@
 BACKUP_BASE="/var/lib/proxmox_iommu_script_backup"
 BACKUP_DIR="$BACKUP_BASE/proxmox_backup_$(date +%Y%m%d_%H%M%S)"
 CONFIG_FILES=("/etc/default/grub" "/etc/modules")
-RESTORE_DIR=$(ls -d "$BACKUP_BASE/proxmox_backup_"* 2>/dev/null | tail -n1)
+BACKUP_DIRS=$(ls -d "$BACKUP_BASE/proxmox_backup_"* 2>/dev/null)
 
 # Function to create backups
 backup_configs() {
@@ -83,19 +83,27 @@ set_screen_timeout() {
 
 # Function to restore from backup
 restore_backup() {
-    if [ -z "$RESTORE_DIR" ]; then
-        echo "No backup found!"
+    if [ -z "$BACKUP_DIRS" ]; then
+        echo "No backup directories found in $BACKUP_BASE! Please create a backup first."
         return
     fi
 
-    echo "Restoring from backup: $RESTORE_DIR"
-    for file in "${CONFIG_FILES[@]}"; do
-        cp "$RESTORE_DIR/$(basename "$file")" "$file"
-    done
+    echo "Available backups found:"
+    select restore_dir in $BACKUP_DIRS; do
+        if [ -n "$restore_dir" ]; then
+            echo "Restoring from backup: $restore_dir"
+            for file in "${CONFIG_FILES[@]}"; do
+                cp "$restore_dir/$(basename "$file")" "$file"
+            done
 
-    update-grub
-    update-initramfs -u
-    echo "Backup restored! Reboot required."
+            update-grub
+            update-initramfs -u
+            echo "Backup restored! Reboot required."
+            break
+        else
+            echo "Invalid selection. Please choose a valid backup."
+        fi
+    done
 }
 
 # Main menu
