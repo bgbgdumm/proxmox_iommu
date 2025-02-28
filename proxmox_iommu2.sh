@@ -16,32 +16,69 @@ backup_configs() {
     echo "Backup completed!"
 }
 
+# Function to detect CPU type (Intel or AMD)
+detect_cpu() {
+    if grep -qi "intel" /proc/cpuinfo; then
+        CPU_TYPE="intel"
+    elif grep -qi "amd" /proc/cpuinfo; then
+        CPU_TYPE="amd"
+    else
+        CPU_TYPE="unknown"
+    fi
+}
+
 # Function to enable IOMMU and PCI passthrough
 enable_iommu() {
-    echo "Enabling IOMMU and PCI passthrough..."
-    
-    # Modify GRUB
-    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="[^"]*/& intel_iommu=on amd_iommu=on iommu=pt pcie_acs_override=downstream,multifunction/' /etc/default/grub
+    detect_cpu  # Detect the CPU type
 
-    # Update /etc/modules
-    echo -e "vfio\nvfio_iommu_type1\nvfio_pci\nvfio_virqfd" >> /etc/modules
+    echo "Checking if IOMMU and PCI passthrough are already enabled..."
 
-    # Apply changes
-    update-grub
-    update-initramfs -u
-    echo "IOMMU & PCI passthrough enabled! Reboot required."
+    # Check if IOMMU is already enabled in GRUB
+    if grep -q "intel_iommu=on\|amd_iommu=on" /etc/default/grub; then
+        echo "IOMMU and PCI passthrough are already enabled!"
+    else
+        echo "Enabling IOMMU and PCI passthrough..."
+
+        # Set the IOMMU option based on CPU type
+        if [ "$CPU_TYPE" == "intel" ]; then
+            IOMMU_OPTION="intel_iommu=on"
+        elif [ "$CPU_TYPE" == "amd" ]; then
+            IOMMU_OPTION="amd_iommu=on"
+        else
+            echo "Unknown CPU type! Skipping IOMMU configuration."
+            return
+        fi
+
+        # Modify GRUB to add the IOMMU option
+        sed -i "s/GRUB_CMDLINE_LINUX_DEFAULT=\"[^\"]*/& $IOMMU_OPTION iommu=pt pcie_acs_override=downstream,multifunction/" /etc/default/grub
+
+        # Update /etc/modules if necessary
+        if ! grep -q "vfio" /etc/modules; then
+            echo -e "vfio\nvfio_iommu_type1\nvfio_pci\nvfio_virqfd" >> /etc/modules
+        fi
+
+        # Apply changes
+        update-grub
+        update-initramfs -u
+        echo "IOMMU & PCI passthrough enabled for $CPU_TYPE CPU! Reboot required."
+    fi
 }
 
 # Function to set screen blank timeout in GRUB
 set_screen_timeout() {
-    read -p "Enter timeout in minutes (default: 1): " TIMEOUT
-    TIMEOUT=${TIMEOUT:-1}
-    echo "Setting screen blank timeout to $TIMEOUT minute(s) in GRUB..."
+    # Check if consoleblank is already set in GRUB
+    if grep -q "consoleblank=" /etc/default/grub; then
+        echo "Screen blank timeout is already set!"
+    else
+        read -p "Enter timeout in minutes (default: 1): " TIMEOUT
+        TIMEOUT=${TIMEOUT:-1}
+        echo "Setting screen blank timeout to $TIMEOUT minute(s) in GRUB..."
 
-    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="[^"]*/& consoleblank='$((TIMEOUT * 60))'/' /etc/default/grub
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="[^"]*/& consoleblank='$((TIMEOUT * 60))'/' /etc/default/grub
 
-    update-grub
-    echo "Screen blank timeout set! Reboot required."
+        update-grub
+        echo "Screen blank timeout set! Reboot required."
+    fi
 }
 
 # Function to restore from backup
